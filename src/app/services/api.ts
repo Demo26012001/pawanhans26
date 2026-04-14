@@ -429,28 +429,6 @@ export const inquiriesAPI = {
 
     const data = await response.json();
     return { data };
-    const newInquiry = {
-      _id: inquiryData.id || makeId(),
-      id: inquiryData.id || inquiryData._id || makeId(),
-      name: inquiryData.name || '',
-      email: inquiryData.email || '',
-      phone: inquiryData.phone || '',
-      package: inquiryData.package || '',
-      packageName: inquiryData.packageName || '',
-      travelers: inquiryData.travelers || 1,
-      travelDate: inquiryData.travelDate || '',
-      message: inquiryData.message || '',
-      status: inquiryData.status || 'new',
-      priority: inquiryData.priority || 'medium',
-      notes: inquiryData.notes || [],
-      source: inquiryData.source || 'web',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    inquiries.push(newInquiry);
-    writeStorage(STORAGE_KEYS.inquiries, inquiries);
-    return { data: newInquiry };
   },
 
   update: async (id: string, inquiryData: any) => {

@@ -22,25 +22,31 @@ const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER || 'info@pawan
 const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
 const twilioMessagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
 
-const validateConfig = () => {
+const validateEmailConfig = () => {
   const missing = [];
   if (!process.env.SMTP_HOST) missing.push('SMTP_HOST');
   if (!process.env.SMTP_PORT) missing.push('SMTP_PORT');
   if (!process.env.SMTP_USER) missing.push('SMTP_USER');
   if (!process.env.SMTP_PASS) missing.push('SMTP_PASS');
   if (!ownerEmail) missing.push('OWNER_EMAIL');
-  if (!process.env.TWILIO_ACCOUNT_SID) missing.push('TWILIO_ACCOUNT_SID');
-  if (!process.env.TWILIO_AUTH_TOKEN) missing.push('TWILIO_AUTH_TOKEN');
-  if (!twilioFrom && !twilioMessagingServiceSid) missing.push('TWILIO_PHONE_NUMBER or TWILIO_MESSAGING_SERVICE_SID');
 
   if (missing.length) {
-    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+    throw new Error(`Missing required email configuration: ${missing.join(', ')}`);
   }
+};
+
+const isSmsConfigured = () => {
+  return Boolean(
+    process.env.TWILIO_ACCOUNT_SID &&
+    process.env.TWILIO_AUTH_TOKEN &&
+    (twilioFrom || twilioMessagingServiceSid)
+  );
 };
 
 const normalizePhoneNumber = (rawPhone) => {
   if (!rawPhone) return '';
   const cleaned = rawPhone.replace(/[^\d+]/g, '');
+  if (!cleaned) return '';
   return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
 };
 
@@ -109,13 +115,17 @@ const sendCustomerEmail = async (inquiry) => {
 };
 
 const sendWelcomeSms = async (phone, name) => {
-  validateConfig();
+  if (!isSmsConfigured()) {
+    console.warn('Twilio SMS not configured. Skipping welcome SMS.');
+    return;
+  }
 
   const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
   const toNumber = normalizePhoneNumber(phone);
 
   if (!toNumber) {
-    throw new Error('Invalid customer phone number for SMS.');
+    console.warn('Invalid customer phone number for SMS. Skipping welcome SMS.');
+    return;
   }
 
   const smsPayload = {
@@ -140,11 +150,35 @@ app.post('/api/inquiries', async (req, res) => {
   }
 
   try {
-    await Promise.all([sendOwnerEmail(req.body), sendCustomerEmail(req.body), sendWelcomeSms(phone, name)]);
-    return res.status(200).json({ success: true, message: 'Inquiry sent. Email and SMS notification delivered.' });
+    const results = await Promise.allSettled([
+      sendOwnerEmail(req.body),
+      sendCustomerEmail(req.body),
+      sendWelcomeSms(phone, name),
+    ]);
+
+    const emailErrors = results.slice(0, 2).filter((result) => result.status === 'rejected');
+    if (emailErrors.length > 0) {
+      throw emailErrors[0].reason;
+    }
+
+    const smsResult = results[2];
+    if (smsResult.status === 'rejected') {
+      console.warn('Welcome SMS failed:', smsResult.reason);
+    }
+
+    const smsStatus = isSmsConfigured()
+      ? smsResult.status === 'fulfilled'
+        ? 'SMS delivered.'
+        : 'SMS failed.'
+      : 'SMS disabled.';
+
+    return res.status(200).json({
+      success: true,
+      message: `Inquiry sent. Emails delivered. ${smsStatus}`,
+    });
   } catch (error) {
     console.error('Failed to process inquiry:', error);
-    return res.status(500).json({ error: 'Unable to send email or SMS. Check server configuration.' });
+    return res.status(500).json({ error: 'Unable to send inquiry notifications. Check server configuration.' });
   }
 });
 
