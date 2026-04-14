@@ -3,6 +3,9 @@ import express from 'express';
 import cors from 'cors';
 import nodemailer from 'nodemailer';
 import twilio from 'twilio';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
 
@@ -17,21 +20,67 @@ app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 app.use(express.static('dist'));
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const dataDir = path.join(__dirname, 'data');
+const dataFilePath = path.join(dataDir, 'inquiries.json');
+
 const ownerEmail = process.env.OWNER_EMAIL;
 const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER || 'info@pawanhansyatra.co.in';
 const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
 const twilioMessagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
 
-const validateEmailConfig = () => {
-  const missing = [];
-  if (!process.env.SMTP_HOST) missing.push('SMTP_HOST');
-  if (!process.env.SMTP_PORT) missing.push('SMTP_PORT');
-  if (!process.env.SMTP_USER) missing.push('SMTP_USER');
-  if (!process.env.SMTP_PASS) missing.push('SMTP_PASS');
-  if (!ownerEmail) missing.push('OWNER_EMAIL');
+const ensureInquiriesFile = async () => {
+  try {
+    await fs.access(dataFilePath);
+  } catch {
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(dataFilePath, '[]', 'utf8');
+  }
+};
 
-  if (missing.length) {
-    throw new Error(`Missing required email configuration: ${missing.join(', ')}`);
+const readInquiries = async () => {
+  await ensureInquiriesFile();
+  const raw = await fs.readFile(dataFilePath, 'utf8');
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error('Failed to parse inquiries file, resetting it:', error);
+    await fs.writeFile(dataFilePath, '[]', 'utf8');
+    return [];
+  }
+};
+
+const writeInquiries = async (inquiries) => {
+  await ensureInquiriesFile();
+  await fs.writeFile(dataFilePath, JSON.stringify(inquiries, null, 2), 'utf8');
+};
+
+const makeId = () => `inquiry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const createEmailTransport = () => {
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    return nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+  }
+
+  console.warn('SMTP not configured. Falling back to sendmail transport.');
+  return nodemailer.createTransport({
+    sendmail: true,
+    newline: 'unix',
+    path: process.env.SENDMAIL_PATH || '/usr/sbin/sendmail',
+  });
+};
+
+const validateEmailConfig = () => {
+  if (!ownerEmail) {
+    throw new Error('OWNER_EMAIL is required for owner notification emails.');
   }
 };
 
@@ -51,18 +100,9 @@ const normalizePhoneNumber = (rawPhone) => {
 };
 
 const sendOwnerEmail = async (inquiry) => {
-  validateConfig();
+  validateEmailConfig();
 
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-
+  const transporter = createEmailTransport();
   const bodyLines = [
     `Name: ${inquiry.name}`,
     `Email: ${inquiry.email}`,
@@ -83,17 +123,7 @@ const sendOwnerEmail = async (inquiry) => {
 };
 
 const sendCustomerEmail = async (inquiry) => {
-  validateConfig();
-
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
+  const transporter = createEmailTransport();
 
   const customerText = `Hello ${inquiry.name},\n\nThank you for filling out our Char Dham Yatra enquiry form. We have received your details successfully.\n\nOur team will review your requirements and get back to you shortly with the best possible options.\n\nIn the meantime, if you have any specific preferences or questions, please feel free to reply to this message.\n\nThank you!`;
 
@@ -143,27 +173,52 @@ const sendWelcomeSms = async (phone, name) => {
 };
 
 app.post('/api/inquiries', async (req, res) => {
-  const { name, email, phone, packageName, travelDate, travelers, message } = req.body;
+  const { name, email, phone, packageName, travelDate, travelers, message, package: packageId } = req.body;
 
   if (!name || !email || !phone || !packageName) {
     return res.status(400).json({ error: 'Please provide name, email, phone, and package information.' });
   }
 
   try {
+    const createdAt = new Date().toISOString();
+    const inquiry = {
+      _id: makeId(),
+      id: makeId(),
+      name: name.trim(),
+      email: email.trim(),
+      phone: phone.trim(),
+      package: packageId || '',
+      packageName: packageName.trim(),
+      travelers: Number(travelers) || 1,
+      travelDate: travelDate || '',
+      message: message || '',
+      status: 'new',
+      priority: 'medium',
+      notes: [],
+      source: 'web',
+      createdAt,
+      updatedAt: createdAt,
+    };
+
+    const inquiries = await readInquiries();
+    inquiries.unshift(inquiry);
+    await writeInquiries(inquiries);
+
     const results = await Promise.allSettled([
-      sendOwnerEmail(req.body),
-      sendCustomerEmail(req.body),
+      sendOwnerEmail(inquiry),
+      sendCustomerEmail(inquiry),
       sendWelcomeSms(phone, name),
     ]);
 
+    const notifications = [];
     const emailErrors = results.slice(0, 2).filter((result) => result.status === 'rejected');
     if (emailErrors.length > 0) {
-      throw emailErrors[0].reason;
+      notifications.push(`Email failed: ${emailErrors[0].reason?.message || 'unknown error'}`);
     }
 
     const smsResult = results[2];
     if (smsResult.status === 'rejected') {
-      console.warn('Welcome SMS failed:', smsResult.reason);
+      notifications.push(`SMS failed: ${smsResult.reason?.message || 'unknown error'}`);
     }
 
     const smsStatus = isSmsConfigured()
@@ -174,11 +229,102 @@ app.post('/api/inquiries', async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: `Inquiry sent. Emails delivered. ${smsStatus}`,
+      data: inquiry,
+      message: `Inquiry saved. ${smsStatus}`,
+      notification: notifications.length ? notifications.join(' | ') : 'Notifications sent successfully.',
     });
   } catch (error) {
     console.error('Failed to process inquiry:', error);
-    return res.status(500).json({ error: 'Unable to send inquiry notifications. Check server configuration.' });
+    return res.status(500).json({
+      error: 'Unable to save inquiry. Check server configuration.',
+      details: error?.message || String(error),
+    });
+  }
+});
+
+app.get('/api/inquiries', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const inquiries = await readInquiries();
+    const result = status && typeof status === 'string'
+      ? inquiries.filter((item) => item.status === status)
+      : inquiries;
+    res.json({ data: result });
+  } catch (error) {
+    console.error('Failed to read inquiries:', error);
+    res.status(500).json({ error: 'Unable to load inquiries.' });
+  }
+});
+
+app.get('/api/inquiries/:id', async (req, res) => {
+  try {
+    const inquiries = await readInquiries();
+    const inquiry = inquiries.find((item) => item._id === req.params.id || item.id === req.params.id);
+    if (!inquiry) {
+      return res.status(404).json({ error: 'Inquiry not found.' });
+    }
+    res.json({ data: inquiry });
+  } catch (error) {
+    console.error('Failed to read inquiry:', error);
+    res.status(500).json({ error: 'Unable to load inquiry.' });
+  }
+});
+
+app.put('/api/inquiries/:id', async (req, res) => {
+  try {
+    const inquiries = await readInquiries();
+    const index = inquiries.findIndex((item) => item._id === req.params.id || item.id === req.params.id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'Inquiry not found.' });
+    }
+    inquiries[index] = {
+      ...inquiries[index],
+      ...req.body,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeInquiries(inquiries);
+    res.json({ data: inquiries[index] });
+  } catch (error) {
+    console.error('Failed to update inquiry:', error);
+    res.status(500).json({ error: 'Unable to update inquiry.' });
+  }
+});
+
+app.post('/api/inquiries/:id/notes', async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Note content is required.' });
+    }
+    const inquiries = await readInquiries();
+    const index = inquiries.findIndex((item) => item._id === req.params.id || item.id === req.params.id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'Inquiry not found.' });
+    }
+    const note = {
+      content: content.trim(),
+      createdBy: 'admin',
+      createdAt: new Date().toISOString(),
+    };
+    inquiries[index].notes = [...(inquiries[index].notes || []), note];
+    inquiries[index].updatedAt = new Date().toISOString();
+    await writeInquiries(inquiries);
+    res.json({ data: inquiries[index] });
+  } catch (error) {
+    console.error('Failed to add inquiry note:', error);
+    res.status(500).json({ error: 'Unable to add note.' });
+  }
+});
+
+app.delete('/api/inquiries/:id', async (req, res) => {
+  try {
+    const inquiries = await readInquiries();
+    const filtered = inquiries.filter((item) => item._id !== req.params.id && item.id !== req.params.id);
+    await writeInquiries(filtered);
+    res.json({ data: { success: true } });
+  } catch (error) {
+    console.error('Failed to delete inquiry:', error);
+    res.status(500).json({ error: 'Unable to delete inquiry.' });
   }
 });
 

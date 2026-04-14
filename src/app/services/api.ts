@@ -399,19 +399,31 @@ export const galleryAPI = {
 
 export const inquiriesAPI = {
   getAll: async (params?: { status?: string; page?: number; limit?: number }) => {
-    const inquiries = getData(STORAGE_KEYS.inquiries, [] as any[]);
-    let result = inquiries;
-    if (params?.status) {
-      result = result.filter((item) => item.status === params.status);
+    const apiUrl = API_BASE_URL ? `${API_BASE_URL.replace(/\/$/, '')}/api/inquiries` : '/api/inquiries';
+    const query = new URLSearchParams();
+    if (params?.status) query.set('status', params.status);
+    const response = await fetch(`${apiUrl}${query.toString() ? `?${query.toString()}` : ''}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Inquiry service failed: ${response.status} ${errorText}`);
     }
-    return { data: result };
+
+    const data = await response.json();
+    return { data: data.data };
   },
 
   getById: async (id: string) => {
-    const inquiries = getData(STORAGE_KEYS.inquiries, [] as any[]);
-    const inquiry = inquiries.find((item) => item._id === id || item.id === id);
-    if (!inquiry) throw new Error('Inquiry not found');
-    return { data: inquiry };
+    const apiUrl = API_BASE_URL ? `${API_BASE_URL.replace(/\/$/, '')}/api/inquiries/${id}` : `/api/inquiries/${id}`;
+    const response = await fetch(apiUrl);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Inquiry service failed: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    return { data: data.data };
   },
 
   create: async (inquiryData: any) => {
@@ -428,45 +440,56 @@ export const inquiriesAPI = {
     }
 
     const data = await response.json();
-    return { data };
+    return { data: data.data };
   },
 
   update: async (id: string, inquiryData: any) => {
-    const inquiries = getData(STORAGE_KEYS.inquiries, [] as any[]);
-    const index = inquiries.findIndex((item) => item._id === id || item.id === id);
-    if (index === -1) throw new Error('Inquiry not found');
+    const apiUrl = API_BASE_URL ? `${API_BASE_URL.replace(/\/$/, '')}/api/inquiries/${id}` : `/api/inquiries/${id}`;
+    const response = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(inquiryData),
+    });
 
-    inquiries[index] = {
-      ...inquiries[index],
-      ...inquiryData,
-      updatedAt: new Date().toISOString(),
-    };
-    writeStorage(STORAGE_KEYS.inquiries, inquiries);
-    return { data: inquiries[index] };
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Inquiry service failed: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    return { data: data.data };
   },
 
   addNote: async (id: string, noteContent: string) => {
-    const inquiries = getData(STORAGE_KEYS.inquiries, [] as any[]);
-    const index = inquiries.findIndex((item) => item._id === id || item.id === id);
-    if (index === -1) throw new Error('Inquiry not found');
+    const apiUrl = API_BASE_URL ? `${API_BASE_URL.replace(/\/$/, '')}/api/inquiries/${id}/notes` : `/api/inquiries/${id}/notes`;
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: noteContent }),
+    });
 
-    const note = {
-      content: noteContent,
-      createdBy: 'Admin',
-      createdAt: new Date().toISOString(),
-    };
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Inquiry service failed: ${response.status} ${errorText}`);
+    }
 
-    inquiries[index].notes = [...(inquiries[index].notes || []), note];
-    inquiries[index].updatedAt = new Date().toISOString();
-    writeStorage(STORAGE_KEYS.inquiries, inquiries);
-    return { data: inquiries[index] };
+    const data = await response.json();
+    return { data: data.data };
   },
 
   delete: async (id: string) => {
-    let inquiries = getData(STORAGE_KEYS.inquiries, [] as any[]);
-    inquiries = inquiries.filter((item) => item._id !== id && item.id !== id);
-    writeStorage(STORAGE_KEYS.inquiries, inquiries);
-    return { data: { success: true } };
+    const apiUrl = API_BASE_URL ? `${API_BASE_URL.replace(/\/$/, '')}/api/inquiries/${id}` : `/api/inquiries/${id}`;
+    const response = await fetch(apiUrl, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Inquiry service failed: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    return { data: data.data };
   },
 };
 
