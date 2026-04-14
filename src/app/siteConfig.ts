@@ -7,7 +7,7 @@ export const siteConfig = {
       'Fly to Kedarnath, Badrinath, Gangotri and Yamunotri in style with premium comfort, safety and spiritual peace.',
     video: 'YOUR_NEW_VIDEO_URL_HERE',  // Replace with the direct video URL
     poster: '/hero-poster.png',
-    details: ['4 Days / 3 Nights', 'VIP Darshan Passes', 'Luxury Comfort', 'Scenic Himalayan Routes']
+    details: ['6 Days / 5 Nights', 'VIP Darshan Passes', 'Luxury Comfort', 'Scenic Himalayan Routes']
   },
   navLinks: [
     { href: '/', label: 'Home' },
